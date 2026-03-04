@@ -22,8 +22,10 @@ Debug :
     ALBERT_API_KEY=xxx PROXY_DEBUG=1 uvicorn proxy:app --port 4000
 """
 
+import hashlib
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from typing import Any, Dict
@@ -55,6 +57,24 @@ UNSUPPORTED_TOP_LEVEL = {
     "store",
 }
 
+# ---------------------------------------------------------------------------
+# Mapping de modeles : noms courants -> IDs Albert
+# ---------------------------------------------------------------------------
+MODEL_ALIASES = {
+    # Qwen
+    "Qwen/Qwen2.5-Coder-32B-Instruct-AWQ": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+    "Qwen/Qwen2.5-Coder-32B-Instruct": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+    "qwen-coder": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+    # Mistral
+    "mistral-small": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+    "mistral-medium": "mistral-medium-2508",
+    # Aliases pratiques
+    "gpt-4o": "openai/gpt-oss-120b",
+    "gpt-4o-mini": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+    "gpt-4": "openai/gpt-oss-120b",
+    "gpt-3.5-turbo": "mistralai/Ministral-3-8B-Instruct-2512",
+}
+
 
 def log(label: str, data: str) -> None:
     """Log de debug (active avec PROXY_DEBUG=1)."""
@@ -73,12 +93,83 @@ def fix_payload(body: Dict[str, Any]) -> Dict[str, Any]:
     - Force ``strict: false`` dans chaque tool definition
     - Supprime les champs top-level non supportes
     """
+    # Remapping du modele si necessaire
+    model = body.get("model", "")
+    if model in MODEL_ALIASES:
+        original = model
+        body["model"] = MODEL_ALIASES[model]
+        log("MODEL REMAP", f"{original} -> {body['model']}")
+
+    # Qwen3 : desactiver le mode thinking (genere du reasoning_content vide)
+    if body.get("model", "").startswith("Qwen/Qwen3"):
+        body["chat_template_kwargs"] = {"enable_thinking": False}
+        # Limiter max_tokens si absent (evite timeout sur gros prompts)
+        body.setdefault("max_tokens", 16384)
+
+    # Corriger les messages pour compatibilite Mistral/Albert
+    for msg in body.get("messages", []):
+        if msg.get("role") == "assistant":
+            # Supprimer tool_calls vide (Mistral refuse [])
+            if "tool_calls" in msg and not msg["tool_calls"]:
+                del msg["tool_calls"]
+            # S'assurer que content ou tool_calls est present
+            has_content = msg.get("content") not in (None,)
+            has_tools = bool(msg.get("tool_calls"))
+            if not has_content and not has_tools:
+                msg["content"] = " "
+
+    # Reecrire les tool_call_id trop longs ou invalides
+    # Mistral exige : [a-zA-Z0-9]{9}
+    body = fix_tool_call_ids(body)
+
     for tool in body.get("tools", []):
         fn = tool.get("function", {})
         fn["strict"] = False
 
     for field in UNSUPPORTED_TOP_LEVEL:
         body.pop(field, None)
+
+    return body
+
+
+def _short_id(original: str) -> str:
+    """Genere un ID de 9 caracteres alphanumeriques a partir d'un ID original."""
+    if re.fullmatch(r"[a-zA-Z0-9]{9}", original):
+        return original
+    return hashlib.md5(original.encode()).hexdigest()[:9]
+
+
+def fix_tool_call_ids(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Reecrit les tool_call_id pour respecter le format Mistral :
+    exactement 9 caracteres alphanumeriques [a-zA-Z0-9].
+
+    Maintient un mapping pour garder la coherence entre les tool_calls
+    d'un message assistant et les tool_call_id des messages tool.
+    """
+    id_map: Dict[str, str] = {}
+
+    for msg in body.get("messages", []):
+        # Messages assistant avec tool_calls
+        for tc in msg.get("tool_calls", []):
+            old_id = tc.get("id", "")
+            if old_id and not re.fullmatch(r"[a-zA-Z0-9]{9}", old_id):
+                new_id = _short_id(old_id)
+                id_map[old_id] = new_id
+                tc["id"] = new_id
+
+        # Messages tool avec tool_call_id
+        if msg.get("role") == "tool" and "tool_call_id" in msg:
+            old_id = msg["tool_call_id"]
+            if old_id in id_map:
+                msg["tool_call_id"] = id_map[old_id]
+            elif not re.fullmatch(r"[a-zA-Z0-9]{9}", old_id):
+                new_id = _short_id(old_id)
+                id_map[old_id] = new_id
+                msg["tool_call_id"] = new_id
+
+    if id_map and DEBUG:
+        log("TOOL_CALL_ID REWRITE", json.dumps(id_map, indent=2))
 
     return body
 
