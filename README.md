@@ -13,6 +13,20 @@ Le proxy intercepte les requetes, corrige ces incompatibilites, et les transmet 
 
 ## Installation
 
+### Option 1 : Docker (recommande)
+
+```bash
+git clone https://github.com/benoitvx/albert-proxy.git
+cd albert-proxy
+cp .env.example .env
+# Editer .env avec votre cle Albert API
+docker compose up -d
+```
+
+Le proxy est accessible sur http://localhost:4000
+
+### Option 2 : Installation locale
+
 ```bash
 git clone https://github.com/benoitvx/albert-proxy.git
 cd albert-proxy
@@ -45,7 +59,23 @@ export ALBERT_API_KEY="votre-cle-albert"
 
 ## Usage
 
-### Lancer le proxy
+### Avec Docker
+
+```bash
+# Demarrer
+docker compose up -d
+
+# Voir les logs
+docker compose logs -f
+
+# Mode debug
+PROXY_DEBUG=1 docker compose up -d
+
+# Arreter
+docker compose down
+```
+
+### Sans Docker
 
 ```bash
 source venv/bin/activate

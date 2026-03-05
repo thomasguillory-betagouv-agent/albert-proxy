@@ -47,6 +47,12 @@ app = FastAPI(
     description="Proxy de compatibilite pour Albert API (OpenGateLLM)",
 )
 
+
+@app.get("/health")
+def health():
+    """Health check endpoint for Docker/Kubernetes probes."""
+    return {"status": "ok"}
+
 # ---------------------------------------------------------------------------
 # Champs OpenAI non supportes par OpenGateLLM
 # ---------------------------------------------------------------------------
